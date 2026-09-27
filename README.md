@@ -1,6 +1,6 @@
 \# Azure Detection Engineering Lab
 
-In this repo I will emulate a production-ready enterprise-grade security engineering environment for developing, validating, and automating detection and response actions.
+In this repo I will demonstrate DevSecOps proficiency in standing up a zero-trust security engineering environment for developing, validating, and automating detection and response actions. All resources will be deployed in a Terraform/GitHub Actions CI/CD pipeline with a human approval gate. All identities will be scoped with the least privilege for their role. Managed identities will eliminate the need for stored credentials
 
 ## Objectives
 
@@ -26,23 +26,23 @@ This project is currently in \*\*Phase 1: Architecture and Terraform Bootstrap\*
 
 ## Phases:
 
-1. Architecture and Terraform Bootstrap
-2. Secure Azure foundations
-3. Telemetry pipeline
-4. Detection engineering
-
-5\. Atomic Red Team validation
-6. Security automation/alert enrichment
-7. AI event investigator
+1. \[ ] Architecture and Terraform Bootstrap
+2. \[ ] Secure Azure foundations
+3. \[ ] Telemetry pipeline
+4. \[ ] Detection engineering
+5. \[ ] Atomic Red Team validation
+6. \[ ] Security automation/alert enrichment
+7. \[ ] AI event investigator
+8. \[ ] Live honeypot
 
 ## Documentation
-- docs/architecture.md
-- docs/identity-model.md
-- docs/threat-model.md
 
-## Future Ambitions
+* docs/architecture.md
+* docs/identity-model.md
+* docs/threat-model.md
+* docs/zero-trust.md
 
-After building and securing the platform I intend to test my detections and the AI investigator against real attackers by exposing a honeypot to public internet.
 ## License
+
 This project is licensed under the MIT License.
 
