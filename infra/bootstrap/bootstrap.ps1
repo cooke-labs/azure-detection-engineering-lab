@@ -1,6 +1,3 @@
-
-bootstrap.ps1
-Copied
 <#
     bootstrap.ps1
     One-time, manual bootstrap of the Terraform remote state backend.
@@ -70,8 +67,9 @@ Get-AzContext
 $rg         = "rg-bootstrap"
 $loc        = "westus2"
 $subId      = (Get-AzContext).Subscription.Id
-$repo       = "cooke-labs/azure-detection-engineering-lab"
-$sa         = Get-AzStorageAccount -ResourceGroupName $rg -Name "stlabbootstraptfstate"
+$ghOrg      = "cooke-labs"
+$ghRepo     = "azure-detection-engineering-lab"
+$sa        = Get-AzStorageAccount -ResourceGroupName $rg -Name "stlabbootstraptfstate"
 # The state container's full Azure ID, used later to scope storage roles to just this container.
 $stateScope = "$($sa.Id)/blobServices/default/containers/tfstate"
 
@@ -98,17 +96,33 @@ while ((Get-AzResourceProvider -ProviderNamespace "Microsoft.ManagedIdentity" |
 $plan  = New-AzUserAssignedIdentity -ResourceGroupName $rg -Name "mi-tf-plan"  -Location $loc
 $apply = New-AzUserAssignedIdentity -ResourceGroupName $rg -Name "mi-tf-apply" -Location $loc
 
+# --- Discover GitHub's immutable owner and repository IDs ---------------------
+# Repositories created after July 15, 2026 put immutable numeric IDs in the OIDC
+# subject claim: repo:<owner>@<owner-id>/<repo>@<repo-id>:<context>
+# The IDs never change, even if the org or repo is renamed. A deleted name that
+# someone re-registers gets new IDs, so it can't match these credentials. This
+# mitigates "repojacking". See learnings/oidc-immutable-subject-claims.md.
+# The repo is public, so GitHub's API returns these IDs without signing in.
+$ghInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$ghOrg/$ghRepo" `
+    -Headers @{ Accept = "application/vnd.github+json" }
+
+# Builds: repo:cooke-labs@<owner-id>/azure-detection-engineering-lab@<repo-id>
+$subjectPrefix = "repo:${ghOrg}@$($ghInfo.owner.id)/${ghRepo}@$($ghInfo.id)"
+Write-Host "Subject prefix: $subjectPrefix"
+
 # --- Federate the identities to GitHub Actions (OIDC) -------------------------
 # Each federated credential trusts GitHub's login tokens only for this repo in one
-# specific situation (the "subject"). The braces in ${repo} stop PowerShell from
-# reading "$repo:pull_request" as a single variable name.
+# specific situation (the "subject"). The subject must match what GitHub sends
+# exactly; a mismatch fails login with AADSTS700213, and that error message shows
+# the subject GitHub actually sent. The braces in ${subjectPrefix} stop PowerShell
+# from reading "$subjectPrefix:pull_request" as a single variable name.
 
 # Plan: trusted for pull request runs.
 New-AzFederatedIdentityCredential -ResourceGroupName $rg -IdentityName "mi-tf-plan" `
     -Name "gh-pull-request" `
     -Issuer "https://token.actions.githubusercontent.com" `
     -Audience "api://AzureADTokenExchange" `
-    -Subject "repo:${repo}:pull_request"
+    -Subject "${subjectPrefix}:pull_request"
 
 # Apply: trusted only for jobs in the protected "lab" GitHub environment,
 # which requires manual approval before it runs.
@@ -116,20 +130,29 @@ New-AzFederatedIdentityCredential -ResourceGroupName $rg -IdentityName "mi-tf-ap
     -Name "gh-env-lab" `
     -Issuer "https://token.actions.githubusercontent.com" `
     -Audience "api://AzureADTokenExchange" `
-    -Subject "repo:${repo}:environment:lab"
+    -Subject "${subjectPrefix}:environment:lab"
 
-# Assign appropriately scoped roles to each new identity.
+# --- Least-privilege role assignments -----------------------------------------
+# Reader/Contributor control resources (management plane). They don't include
+# access to blob contents (data plane), so each identity also gets a storage
+# data role scoped to the tfstate container only.
+#   Plan:  Reader on the subscription, Storage Blob Data Reader on tfstate.
+#          Read-only end to end; plan runs with -lock=false.
+#   Apply: Contributor on rg-lab-core only (never rg-bootstrap), and
+#          Storage Blob Data Contributor on tfstate (read, write, and lock state).
+# If a command fails with "principal does not exist," the new identity hasn't
+# finished replicating in Entra ID yet. Wait a minute and rerun that line.
 New-AzRoleAssignment -ObjectId $plan.PrincipalId  -RoleDefinitionName "Reader" -Scope "/subscriptions/$subId"
 New-AzRoleAssignment -ObjectId $plan.PrincipalId  -RoleDefinitionName "Storage Blob Data Reader" -Scope $stateScope
 New-AzRoleAssignment -ObjectId $apply.PrincipalId -RoleDefinitionName "Contributor" -Scope $workloadRg.ResourceId
 New-AzRoleAssignment -ObjectId $apply.PrincipalId -RoleDefinitionName "Storage Blob Data Contributor" -Scope $stateScope
 
-# Verify role assignment
-# Each subject should match the ADR exactly
+# --- Verify federation and roles ----------------------------------------------
+# Each subject should match ADR 0002 exactly, including the immutable IDs.
 Get-AzFederatedIdentityCredential -ResourceGroupName $rg -IdentityName "mi-tf-plan"  | Select-Object Name, Subject
 Get-AzFederatedIdentityCredential -ResourceGroupName $rg -IdentityName "mi-tf-apply" | Select-Object Name, Subject
 
-# Each identity should have exactly two roles at the expected scopes
+# Each identity should have exactly two roles at the expected scopes.
 Get-AzRoleAssignment -ObjectId $plan.PrincipalId  | Select-Object RoleDefinitionName, Scope
 Get-AzRoleAssignment -ObjectId $apply.PrincipalId | Select-Object RoleDefinitionName, Scope
 
@@ -142,4 +165,3 @@ Get-AzRoleAssignment -ObjectId $apply.PrincipalId | Select-Object RoleDefinition
     AZURE_CLIENT_ID_PLAN  = $plan.ClientId
     AZURE_CLIENT_ID_APPLY = $apply.ClientId
 } | Format-List
- 
