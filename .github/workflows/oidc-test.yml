@@ -1,0 +1,104 @@
+# Test for the bootstrap pipeline identities (see docs/adr/0002-pipeline-identities-oidc.md).
+# Each job logs in to Azure with GitHub OIDC (no stored secret), conducts a series of checks to ensure permissions are correctly scoped.
+
+name: OIDC identity test
+
+on:
+  # Plan test: runs automatically on pull requests.
+  pull_request:
+  # Apply test: run by hand from the Actions tab, on the main branch.
+  workflow_dispatch:
+
+# Default for every job: read the repo, nothing more.
+permissions:
+  contents: read
+
+jobs:
+  plan-identity:
+    name: Plan identity (read-only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # No "environment:" here on purpose. GitHub only puts "pull_request" in the
+    # login token's subject when the job has no environment, and that's the
+    # subject mi-tf-plan trusts.
+    permissions:
+      contents: read
+      id-token: write   # lets GitHub issue the OIDC login token for this job
+    steps:
+      - name: Log in to Azure as mi-tf-plan
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_PLAN }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true   # sign in Azure PowerShell, so later steps can use Az cmdlets
+
+      - name: Run checks as mi-tf-plan
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            # Storage context that authenticates as the signed-in identity (no account key).
+            $ctx = New-AzStorageContext -StorageAccountName "stlabbootstraptfstate" -UseConnectedAccount
+
+            # SHOULD WORK: list blobs in the state container (Storage Blob Data Reader).
+            Get-AzStorageBlob -Container "tfstate" -Context $ctx | Select-Object Name, LastModified
+            Write-Host "Read of state container succeeded, as expected."
+
+            # SHOULD FAIL: upload a blob to the state container (plan is read-only).
+            Set-Content -Path "oidc-test.txt" -Value "test"
+            try {
+                Set-AzStorageBlobContent -File "oidc-test.txt" -Container "tfstate" -Blob "oidc-test.txt" `
+                    -Context $ctx -Force -ErrorAction Stop | Out-Null
+                Write-Host "::error::mi-tf-plan was able to write state. It should be read-only."
+                exit 1
+            }
+            catch {
+                Write-Host "Write was denied, as expected: $($_.Exception.Message)"
+            }
+
+  apply-identity:
+    name: Apply identity (behind approval)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # Declaring the environment does three things: GitHub pauses for your approval,
+    # refuses to run unless this is the main branch, and releases the
+    # AZURE_CLIENT_ID_APPLY environment secret. It also puts "environment:lab" in
+    # the login token's subject, which is what mi-tf-apply trusts.
+    environment: lab
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Log in to Azure as mi-tf-apply
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_APPLY }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Run checks as mi-tf-apply
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            # SHOULD WORK: read the workload resource group (Contributor on rg-lab-core).
+            Get-AzResourceGroup -Name "rg-lab-core" | Select-Object ResourceGroupName, Location
+            Write-Host "Read of rg-lab-core succeeded, as expected."
+
+            # SHOULD WORK: list blobs in the state container (Storage Blob Data Contributor).
+            $ctx = New-AzStorageContext -StorageAccountName "stlabbootstraptfstate" -UseConnectedAccount
+            Get-AzStorageBlob -Container "tfstate" -Context $ctx | Select-Object Name, LastModified
+            Write-Host "Read of state container succeeded, as expected."
+
+            # SHOULD FAIL: read the bootstrap resource group (apply has no access there).
+            # Without access, Azure reports the group as "not found" rather than "forbidden".
+            try {
+                Get-AzResourceGroup -Name "rg-bootstrap" -ErrorAction Stop | Out-Null
+                Write-Host "::error::mi-tf-apply can see rg-bootstrap. Its scope is too broad."
+                exit 1
+            }
+            catch {
+                Write-Host "Access to rg-bootstrap was denied, as expected: $($_.Exception.Message)"
+            }
