@@ -26,7 +26,7 @@ This project is currently in \*\*Phase 1: Architecture and Terraform Bootstrap\*
 
 ## Phases:
 
-1. \[ ] Architecture and Terraform Bootstrap
+1. \[x] Architecture and Terraform Bootstrap
 2. \[ ] Secure Azure foundations
 3. \[ ] Telemetry pipeline
 4. \[ ] Detection engineering
